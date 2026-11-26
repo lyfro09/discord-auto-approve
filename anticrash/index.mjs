@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AuditLogEvent as A, Client, Events, GatewayIntentBits as I, Routes } from 'discord.js';
 import { commandData, handleCommand } from './commands.mjs';
+import { JoinRole } from './join-role.mjs';
 import { acceptAudit, closeObservations, observe, revokeGrants } from './detect.mjs';
 import { auditStart, DiscordServer, normalizeAudit, observationFor } from './discord.mjs';
 import { dangerous, isId, isManager } from './policy.mjs';
@@ -13,9 +14,11 @@ import { field, readableText, userRef } from './presentation.mjs';
 const describe = error => String(error.message ?? error).slice(0, 230);
 
 export class AntiCrash {
-  constructor(client, store) {
+  constructor(client, store, { protection = true, guild, role } = {}) {
     this.client = client;
     this.store = store;
+    this.protection = protection;
+    this.joinRole = new JoinRole(store, guild, role);
     this.servers = new Map();
     this.auditQueues = new Map();
     this.polling = new Set();
@@ -61,14 +64,20 @@ export class AntiCrash {
     client.on(Events.ShardError, error => console.error(`Антикраш Gateway: ${describe(error)}`));
     client.on(Events.Raw, (packet, shard) => {
       const guild = packet.d?.guild_id ?? (packet.t === 'GUILD_UPDATE' ? packet.d.id : null);
-      if (!guild || !client.isReady()) return;
+      if (!this.protection || !guild || !client.isReady()) return;
       const server = client.guilds.cache.get(guild);
       if (!server) return;
       try { this.gateway(this.server(server), packet, shard); }
       catch (error) { this.safe(guild, 'обработка Gateway', error); }
     });
+    if (this.joinRole.enabled) {
+      client.on(Events.GuildMemberAdd, member => this.joinRole.enqueue(member));
+      client.on(Events.GuildMemberUpdate, (oldMember, member) => {
+        if (oldMember.pending && !member.pending) this.joinRole.screeningFinished(member);
+      });
+    }
     client.on(Events.InteractionCreate, interaction => {
-      if (!interaction.isChatInputCommand() || interaction.commandName !== 'anticrash' || !interaction.inGuild()) return;
+      if (!this.protection || !interaction.isChatInputCommand() || interaction.commandName !== 'anticrash' || !interaction.inGuild()) return;
       const guild = client.guilds.cache.get(interaction.guildId);
       if (guild) void handleCommand(this.store, this.server(guild), interaction)
         .catch(error => this.safe(guild.id, 'ответ на команду', error, false));
@@ -87,9 +96,10 @@ export class AntiCrash {
 
   online(guild) {
     if (!guild.available) return;
-    this.store.run(`UPDATE quarantine SET phase='queued',due=0,revision=revision+1
-      WHERE guild=? AND phase IN ('active','partial','absent')`, guild.id);
-    void this.register(guild);
+    if (this.protection) {
+      this.store.run(`UPDATE quarantine SET phase='queued',due=0,revision=revision+1
+        WHERE guild=? AND phase IN ('active','partial','absent')`, guild.id);
+    }
     this.tick();
   }
 
@@ -223,8 +233,8 @@ export class AntiCrash {
       if (!guild.available || !this.client.isReady()) continue;
       const server = this.server(guild);
       const settings = this.store.settings(guild.id);
-      void this.register(guild);
-      if (!this.polling.has(guild.id) && settings.mode !== 'off') {
+      if (this.protection) void this.register(guild);
+      if (this.protection && !this.polling.has(guild.id) && settings.mode !== 'off') {
         this.polling.add(guild.id);
         void this.reconcile(server, settings).finally(() => this.polling.delete(guild.id));
       }
@@ -273,6 +283,10 @@ export class AntiCrash {
 
   async work(server, settings) {
     const guild = server.guild.id;
+    if (!this.protection) {
+      await this.joinRole.work(server, settings);
+      return;
+    }
     const rows = this.store.all(`SELECT * FROM quarantine WHERE guild=? AND due<=?
       AND (phase='releasing' OR (? AND phase IN ('queued','applying'))) ORDER BY id LIMIT 8`,
     guild, Date.now(), Number(settings.mode === 'active')).map(decoded);
@@ -301,7 +315,9 @@ export class AntiCrash {
         this.store.saveQuarantine(row, row.phase, Date.now() + 15_000);
       }
     }
-    await this.deliver(server, this.store.settings(guild));
+    const current = this.store.settings(guild);
+    await this.joinRole.work(server, current);
+    await this.deliver(server, current);
   }
 
   async deliver(server, settings) {
@@ -322,7 +338,7 @@ export class AntiCrash {
   }
 }
 
-export async function startAntiCrash(token, signal) {
+export async function startAntiCrash(token, signal, options) {
   if (signal?.aborted) return;
   const path = process.env.ANTICRASH_DB_PATH || join(process.env.DATA_DIR || './data', 'anticrash.sqlite');
   let store;
@@ -333,7 +349,7 @@ export async function startAntiCrash(token, signal) {
   }
   console.log(`Антикраш: SQLite открыта (${path === ':memory:' ? path : resolve(path)}).`);
   const client = new Client({ intents: [I.Guilds, I.GuildModeration, I.GuildMembers, I.GuildVoiceStates, I.GuildWebhooks] });
-  const guard = new AntiCrash(client, store);
+  const guard = new AntiCrash(client, store, options);
   if (signal?.aborted) return;
   signal?.addEventListener('abort', () => guard.stop(), { once: true });
   guard.start();

@@ -38,7 +38,13 @@ const migrations = [`
     target TEXT NOT NULL, kind TEXT, subject TEXT, at INTEGER NOT NULL, PRIMARY KEY(guild,reason));
   CREATE TABLE confirmation (id TEXT PRIMARY KEY, guild TEXT NOT NULL, actor TEXT NOT NULL,
     expires INTEGER NOT NULL, data TEXT NOT NULL);
-`, `ALTER TABLE log ADD COLUMN presentation TEXT;`];
+`, `ALTER TABLE log ADD COLUMN presentation TEXT;`, `
+  CREATE TABLE join_role_queue (
+    guild TEXT NOT NULL, member TEXT NOT NULL, joined INTEGER NOT NULL, due INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(guild,member)
+  );
+  CREATE INDEX join_role_due ON join_role_queue(guild,done,due);
+`];
 
 const encode = JSON.stringify;
 const parse = JSON.parse;

@@ -110,9 +110,13 @@ async function main() {
     return;
   }
 
-  if (process.env.ANTICRASH_ENABLED !== 'false') {
+  const protection = process.env.ANTICRASH_ENABLED !== 'false';
+  const configuredRole = process.env.DISCORD_JOIN_ROLE_ID?.trim();
+  const role = isId(configuredRole) ? configuredRole : undefined;
+  if (configuredRole && !role) console.error('Автовыдача при входе: укажи числовой DISCORD_JOIN_ROLE_ID.');
+  if (protection || role) {
     void import('./anticrash/index.mjs')
-      .then(module => module.startAntiCrash(token, stopAntiCrash.signal))
+      .then(module => module.startAntiCrash(token, stopAntiCrash.signal, { protection, guild, role }))
       .catch(error => console.error(`Антикраш не запустился: ${error.message}`));
   }
 
