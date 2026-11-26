@@ -180,9 +180,9 @@ test('управление отделено от доверия, мастер о
     },
   };
   await handleCommand(store, server, interaction);
-  assert.match(responses.at(-1).content, /Доступ есть у владельца/);
+  assert.match(responses.at(-1).embeds[0].description, /Доступ есть у владельца/);
   interaction.user.id = owner;
   await handleCommand(store, server, interaction);
   assert.equal(store.settings(guild).mode, 'observe');
-  assert.match(responses.at(-1).content, /Нет доступа к связи/);
+  assert.match(responses.at(-1).embeds[0].description, /Нет доступа к связи/);
 });

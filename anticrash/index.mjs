@@ -8,6 +8,7 @@ import { auditStart, DiscordServer, normalizeAudit, observationFor } from './dis
 import { dangerous, isId, isManager } from './policy.mjs';
 import { applyQuarantine, releaseQuarantine } from './quarantine.mjs';
 import { decoded, Store } from './store.mjs';
+import { field, readableText, userRef } from './presentation.mjs';
 
 const describe = error => String(error.message ?? error).slice(0, 230);
 
@@ -33,7 +34,11 @@ export class AntiCrash {
   safe(guild, context, error, log = true) {
     const message = `Антикраш ${guild} · ${context} · ${describe(error)}`;
     console.error(message);
-    if (log) this.store.log(guild, message);
+    if (log) this.store.log(guild, {
+      title: 'Ошибка антикраша', tone: 'error',
+      fields: [field('Операция', context, false)],
+      description: readableText(describe(error), this.client.guilds.cache.get(guild)),
+    });
   }
 
   start() {
@@ -144,7 +149,11 @@ export class AntiCrash {
       settings.managerSince = {};
       this.store.transaction(() => {
         this.store.saveSettings(guild, settings);
-        this.store.log(guild, 'Владелец сервера сменился. Прежние назначения администраторов антикраша отозваны.');
+        this.store.log(guild, {
+          title: 'Владелец сервера сменился', tone: 'settings',
+          description: 'Прежние назначения администраторов антикраша отозваны.',
+          fields: [field('Новый владелец', userRef(d.owner_id))],
+        });
       });
     }
 
@@ -275,7 +284,11 @@ export class AntiCrash {
         if (row.phase === 'releasing') {
           if (!isManager(current, server.guild.ownerId, row.data.releasePlan.operator)) {
             this.store.saveQuarantine(row, 'release-partial');
-            this.store.log(guild, `Карантин #${row.id}: у оператора больше нет доступа к снятию. Новый администратор должен подтвердить снятие.`, true);
+            this.store.log(guild, {
+              title: 'Снятие карантина приостановлено', tone: 'alert',
+              description: 'Доступ оператора отозван. Снятие должен подтвердить действующий администратор.',
+              fields: [field('Участник', userRef(row.member))], footer: `Карантин №${row.id}`,
+            }, true);
             continue;
           }
           await releaseQuarantine(this.store, server, row);
@@ -298,7 +311,7 @@ export class AntiCrash {
       ORDER BY urgent DESC,id LIMIT 8`, guild, Date.now());
     for (const row of pending) {
       try {
-        await server.send(settings, row.body, row.urgent);
+        await server.send(settings, row);
         this.store.run(`UPDATE log SET status='sent',error=NULL WHERE id=?`, row.id);
       } catch (error) {
         const delay = Math.min(300_000, (2 ** Math.min(9, row.attempts)) * 5000);

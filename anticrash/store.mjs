@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { defaultSettings } from './policy.mjs';
+import { cardText } from './presentation.mjs';
 
 const migrations = [`
   CREATE TABLE settings (guild TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -37,7 +38,7 @@ const migrations = [`
     target TEXT NOT NULL, kind TEXT, subject TEXT, at INTEGER NOT NULL, PRIMARY KEY(guild,reason));
   CREATE TABLE confirmation (id TEXT PRIMARY KEY, guild TEXT NOT NULL, actor TEXT NOT NULL,
     expires INTEGER NOT NULL, data TEXT NOT NULL);
-`];
+`, `ALTER TABLE log ADD COLUMN presentation TEXT;`];
 
 const encode = JSON.stringify;
 const parse = JSON.parse;
@@ -88,9 +89,12 @@ export class Store {
       guild, encode(settings));
   }
 
-  log(guild, body, urgent = false) {
-    this.run('INSERT INTO log (guild,at,body,urgent) VALUES (?,?,?,?)',
-      guild, Date.now(), body.slice(0, 1850), Number(urgent));
+  log(guild, entry, urgent = false) {
+    const at = Date.now();
+    const card = typeof entry === 'string' ? null : { at, ...entry };
+    const summary = card ? cardText(card) : entry;
+    this.run('INSERT INTO log (guild,at,body,urgent,presentation) VALUES (?,?,?,?,?)',
+      guild, at, summary.slice(0, 1850), Number(urgent), card ? encode(card) : null);
   }
 
   incident(guild, { type, scope, actor, target, at, audit, data }, window) {

@@ -4,6 +4,10 @@ import { activeTrust, defaultSettings, eventTypes, isManager } from './policy.mj
 import { setGrant } from './detect.mjs';
 import { previewRelease } from './quarantine.mjs';
 import { decoded } from './store.mjs';
+import {
+  cardText, channelRef, embedFor, eventName, field, literal, logCard, modeName, reactionName,
+  readableText, roleRef, targetRef, timestamp, userRef,
+} from './presentation.mjs';
 
 const choices = values => values.map(value => ({ name: value, value }));
 const text = (sub, name, description, required = true, length = 300) =>
@@ -77,14 +81,22 @@ sub('incident', 'Показать детали инцидента и реакц�
 sub('logs', 'Показать записи журнала и состояние доставки', option => number(option, 'page', 'Страница', 1, 500));
 export const commandData = command.toJSON();
 
-const timestamp = at => new Date(at).toISOString();
-const modeName = { off: 'выключен', observe: 'наблюдение', active: 'активная защита' };
 const phaseNames = {
   queued: 'в очереди', applying: 'применяется', active: 'активен, ограничения проверены', partial: 'частичный',
   absent: 'участник вне сервера', releasing: 'снимается', 'release-partial': 'снят частично', released: 'снят',
 };
 const rowPage = (options, size) => ((options.getInteger('page') ?? 1) - 1) * size;
-const label = (id, fallback = 'нет') => id ?? fallback;
+const trustMode = { allow: 'Разрешённые действия', limit: 'Повышенный порог', immune: 'Полный иммунитет' };
+const delivery = { sent: 'Доставлено', queued: 'В очереди' };
+const trustRef = (kind, id) => kind === 'role' ? roleRef(id) : userRef(id);
+const commandTitles = {
+  status: 'Состояние защиты', setup: 'Настройка защиты', mode: 'Режим защиты', rules: 'Правила защиты',
+  rule: 'Правило защиты', manager: 'Администраторы защиты', 'trust-list': 'Доверенные участники и роли',
+  'trust-set': 'Доверенная запись', 'trust-remove': 'Доверенная запись', 'trust-confirm': 'Подтверждение роли',
+  quarantine: 'Карантин', retry: 'Повторная проверка', quarantines: 'Открытые карантины',
+  release: 'Снятие карантина', 'release-confirm': 'Снятие карантина', incidents: 'Инциденты',
+  incident: 'Детали инцидента', logs: 'Журнал антикраша',
+};
 const managerMessage = 'Доступ есть у владельца и назначенных им администраторов антикраша.';
 const requiredId = string => {
   if (!/^[1-9][0-9]{0,19}$/.test(string)) throw new Error('Укажи числовой ID Discord.');
@@ -96,29 +108,41 @@ function setMode(settings, mode) {
   settings.mode = mode;
 }
 
-async function respond(interaction, value) {
-  if (value.length <= 1900) {
-    await interaction.editReply({ content: value, allowedMentions: { parse: [] } });
-  } else {
-    await interaction.editReply({
-      content: 'Полный результат в текстовом файле.',
-      files: [new AttachmentBuilder(Buffer.from(value, 'utf8'), { name: 'anticrash.txt' })],
-    });
+async function respond(interaction, guild, title, value, tone = 'info') {
+  const card = typeof value === 'string' ? { title, description: value, tone } : value;
+  const description = readableText(card.description ?? '', guild);
+  const payload = {
+    embeds: [embedFor({ ...card, description })],
+    allowedMentions: { parse: [] },
+  };
+  if (description.length > 3900) {
+    // Discord mentions in an attachment are just raw tokens. Keep the full technical text for reference.
+    payload.files = [new AttachmentBuilder(Buffer.from(cardText(card), 'utf8'), { name: 'anticrash.txt' })];
   }
+  await interaction.editReply(payload);
 }
 
-function recordChange(store, guild, settings, actor, description) {
+function recordChange(store, guild, settings, actor, title, fields, description) {
   store.transaction(() => {
     store.saveSettings(guild, settings);
-    store.log(guild, `Настройки · оператор ${actor} · ${description}`);
+    store.log(guild, {
+      title, tone: 'settings', description, fields: [field('Оператор', userRef(actor)), ...fields],
+    });
   });
 }
+
+const settingFields = settings => [
+  field('Режим', modeName[settings.mode]), field('Канал журнала', channelRef(settings.log)),
+  field('Роль карантина', roleRef(settings.quarantine)),
+  ...(settings.support ? [field('Канал связи', channelRef(settings.support))] : []),
+  ...(settings.mention ? [field('Срочные оповещения', roleRef(settings.mention))] : []),
+];
 
 async function managerAction(store, server, interaction, name, settings) {
   const { options, guildId: guild } = interaction;
   const actor = interaction.user.id;
   const input = key => options.getString(key);
-  const log = description => recordChange(store, guild, settings, actor, description);
+  const log = (title, fields = [], description) => recordChange(store, guild, settings, actor, title, fields, description);
   const guard = () => {
     const saved = store.settings(guild);
     if (!isManager(saved, server.guild.ownerId, actor)) throw new Error(managerMessage);
@@ -131,10 +155,15 @@ async function managerAction(store, server, interaction, name, settings) {
       const current = await server.check(settings);
       const pending = store.get(`SELECT COUNT(*) AS count FROM quarantine
         WHERE guild=? AND phase!='released'`, guild).count;
-      return [`Режим: ${modeName[settings.mode]}. Открытые карантины: ${pending}.`,
-        `Логи: ${label(settings.log)}. Роль: ${label(settings.quarantine)}. Связь: ${label(settings.support)}. Оповещения: ${label(settings.mention)}.`,
-        `Администраторы антикраша: ${settings.managers.join(', ') || 'только владелец'}.`,
-        current.length ? current.join('\n') : 'Проверки активной защиты пройдены.'].join('\n');
+      const logChannel = server.guild.channels?.cache.get(settings.log);
+      const embeds = logChannel && server.guild.members.me && logChannel.permissionsFor(server.guild.members.me)?.has('EmbedLinks');
+      return {
+        title: 'Состояние защиты', tone: current.length ? 'alert' : 'success',
+        description: [...current, ...(logChannel && !embeds ? ['Для эмбедов в канале журнала нужно право **Встраивать ссылки**.'] : [])].join('\n')
+          || 'Проверки активной защиты пройдены.',
+        fields: [...settingFields(settings), field('Открытые карантины', String(pending)),
+          field('Администраторы', settings.managers.map(userRef).join(', ') || 'Только владелец', false)],
+      };
     }
     case 'setup': {
       settings.log = options.getChannel('log', true).id;
@@ -144,7 +173,7 @@ async function managerAction(store, server, interaction, name, settings) {
       const errors = await server.check(settings);
       guard();
       if (settings.mode === 'off' || errors.length) setMode(settings, 'observe');
-      log(`мастер настройки, режим ${settings.mode}, лог ${settings.log}, карантин ${settings.quarantine}, связь ${settings.support}, упоминание ${settings.mention}.`);
+      log('Настройки защиты сохранены', settingFields(settings));
       return errors.length ? `Сохранено. Режим наблюдения. Исправь:\n${errors.join('\n')}`
         : 'Настройки сохранены. Для включения активной защиты используй /anticrash mode value:active.';
     }
@@ -159,7 +188,7 @@ async function managerAction(store, server, interaction, name, settings) {
           store.run('DELETE FROM grants WHERE guild=?', guild);
         }
       }
-      log(`режим ${settings.mode}`);
+      log('Режим защиты изменён', [field('Режим', modeName[settings.mode])]);
       return errors.length ? `Режим наблюдения. Для активной защиты исправь:\n${errors.join('\n')}`
         : `Режим: ${modeName[settings.mode]}.`;
     }
@@ -182,8 +211,12 @@ async function managerAction(store, server, interaction, name, settings) {
         global: options.getInteger('global') ?? rule.global,
         reaction: input('reaction') ?? rule.reaction,
       });
-      log(`правило ${type}: ${JSON.stringify(rule)}`);
-      return `Правило ${type}: ${rule.enabled ? 'включено' : 'выключено'}, ${rule.limit} за ${rule.seconds} с, общий порог ${rule.global || 'выкл.'}, реакция ${rule.reaction}.`;
+      log('Правило защиты изменено', [
+        field('Событие', eventName[type]), field('Состояние', rule.enabled ? 'Включено' : 'Выключено'),
+        field('Порог', `${rule.limit} за ${rule.seconds} с`), field('Общий порог', String(rule.global || 'Выключен')),
+        field('Реакция', reactionName[rule.reaction]),
+      ]);
+      return `**${eventName[type]}** · ${rule.enabled ? 'включено' : 'выключено'}\nПорог: ${rule.limit} за ${rule.seconds} с · общий: ${rule.global || 'выключен'}\nРеакция: ${reactionName[rule.reaction]}.`;
     }
     case 'manager': {
       if (actor !== server.guild.ownerId) throw new Error('Назначать администраторов защиты может только владелец сервера.');
@@ -201,12 +234,12 @@ async function managerAction(store, server, interaction, name, settings) {
         managers.delete(target.id);
       }
       settings.managers = [...managers];
-      log(`администратор ${target.id}: ${permitted ? 'назначен' : 'отозван'}`);
+      log(permitted ? 'Администратор назначен' : 'Доступ администратора отозван', [field('Участник', userRef(target.id))]);
       return permitted ? 'Доступ выдан.' : 'Доступ отозван.';
     }
     case 'trust-list': {
       return Object.entries(settings.trust).map(([id, entry]) =>
-        `${id} · ${entry.mode}${entry.limit ? ' ' + entry.limit : ''} · ${entry.actions.join(', ') || 'все'} · ${entry.expires ? timestamp(entry.expires) : 'бессрочно'} · ${entry.comment}`
+        `${trustRef(...id.split(':'))} · ${trustMode[entry.mode]}${entry.limit ? ' · ' + entry.limit : ''} · ${entry.actions.map(type => eventName[type]).join(', ') || 'Все события'} · ${entry.expires ? timestamp(entry.expires) : 'Бессрочно'}\n${literal(entry.comment)}`
         + (id.startsWith('role:') ? ' · число подтверждений: ' + store.get(`SELECT COUNT(*) AS count FROM grants
           WHERE guild=? AND role=? AND epoch=? AND valid=1`, guild, id.slice(5), settings.trustEpoch[id.slice(5)] ?? 0).count : '')
       ).join('\n') || 'Доверенных записей нет.';
@@ -219,7 +252,7 @@ async function managerAction(store, server, interaction, name, settings) {
       if (name === 'trust-remove') {
         delete settings.trust[key];
         if (kind === 'role') delete settings.trustEpoch[id];
-        log(`удалено доверие ${key}`);
+        log('Доверенная запись удалена', [field('Запись', trustRef(kind, id))]);
         return 'Запись удалена.';
       }
       if (kind === 'role') {
@@ -244,7 +277,11 @@ async function managerAction(store, server, interaction, name, settings) {
       if (kind === 'role') settings.trustEpoch[id] = now;
       settings.trust[key] = { mode, actions, limit: mode === 'limit' ? limit : null,
         created: now, expires: minutes ? now + minutes * 60_000 : null, comment: input('comment') };
-      log(`доверие ${key} · ${mode} · ${actions.join(', ') || 'все'} · ${input('comment')}`);
+      log('Доверенная запись сохранена', [
+        field('Запись', trustRef(kind, id)), field('Доверие', trustMode[mode]),
+        field('Срок', minutes ? timestamp(now + minutes * 60_000) : 'Бессрочно'),
+        field('События', actions.map(type => eventName[type]).join(', ') || 'Все события', false),
+      ], literal(input('comment')));
       return kind === 'role' ? 'Запись сохранена. Для существующих держателей используй /anticrash trust-confirm.'
         : 'Запись сохранена.';
     }
@@ -260,7 +297,9 @@ async function managerAction(store, server, interaction, name, settings) {
       if (!activeTrust(settings, `role:${role}`, now)) throw new Error('Срок доверенной роли истёк.');
       store.transaction(() => {
         for (const member of eligible) setGrant(store, guild, member.id, role, settings.trustEpoch[role], member.joinedTimestamp, now, true);
-        store.log(guild, `Доверенная роль ${role}: оператор ${actor} подтвердил ${eligible.length} держателей.`);
+        store.log(guild, { title: 'Держатели роли подтверждены', tone: 'settings',
+          fields: [field('Роль', roleRef(role)), field('Оператор', userRef(actor)), field('Подтверждено', String(eligible.length))],
+        });
       });
       return `Подтверждено участников: ${eligible.length}.`;
     }
@@ -276,7 +315,10 @@ async function managerAction(store, server, interaction, name, settings) {
           data: { confirmed: true, reaction: 'quarantine', reason: input('reason') } }, 0);
         const q = store.queueQuarantine(guild, target, id, input('reason'), actor);
         store.run(`UPDATE quarantine SET phase='queued',due=0 WHERE id=? AND phase IN ('partial','absent')`, q);
-        store.log(guild, `Инцидент #${id} · ручной карантин #${q} · оператор ${actor} · участник ${target} · ${input('reason')}`, true);
+        store.log(guild, { title: 'Ручной карантин поставлен в очередь', tone: 'quarantine',
+          description: literal(input('reason')), fields: [field('Оператор', userRef(actor)), field('Участник', userRef(target))],
+          footer: `Карантин №${q} · Инцидент №${id}`,
+        }, true);
         return `Карантин #${q} поставлен в очередь. Инцидент #${id}.`;
       });
     }
@@ -288,14 +330,17 @@ async function managerAction(store, server, interaction, name, settings) {
       }
       store.transaction(() => {
         store.saveQuarantine(row, 'queued');
-        store.log(guild, `Карантин #${row.id}: повторная проверка назначена оператором ${actor}.`);
+        store.log(guild, { title: 'Назначена повторная проверка', tone: 'quarantine',
+          fields: [field('Оператор', userRef(actor)), field('Участник', userRef(target))],
+          footer: `Карантин №${row.id}`,
+        });
       });
       return `Карантин #${row.id} поставлен в очередь.`;
     }
     case 'quarantines': {
       return store.all(`SELECT id,member,phase,data FROM quarantine WHERE guild=? AND phase!='released'
         ORDER BY id DESC LIMIT 10 OFFSET ?`, guild, rowPage(options, 10)).map(decoded).map(row =>
-        `#${row.id} · ${row.member} · ${phaseNames[row.phase]}\n${(row.data.releaseErrors ?? row.data.blocked ?? []).join('\n')}`
+        `**№${row.id}** · ${userRef(row.member)} · ${phaseNames[row.phase]}\n${(row.data.releaseErrors ?? row.data.blocked ?? []).join('\n')}`
       ).join('\n') || 'Записей на странице нет.';
     }
     case 'release': {
@@ -309,7 +354,7 @@ async function managerAction(store, server, interaction, name, settings) {
       store.run('INSERT INTO confirmation VALUES (?,?,?,?,?)', code, guild, actor, Date.now() + 300_000,
         JSON.stringify({ id: row.id, target, revision: row.revision, entries, reason: input('reason') }));
       return [
-        `Снятие карантина #${row.id} · участник ${target} · причина: ${input('reason')}`,
+        `Карантин **№${row.id}** · ${userRef(target)}\n${literal(input('reason'))}`,
         ...entries.map(entry => `${entry.label} · ${entry.skip ? 'пропуск: ' + entry.skip
           : entry.dangerous ? entry.change + ' (только при dangerous:True)' : entry.change}`),
         `Подтверждение в течение 5 минут. /anticrash release-confirm code:${code}`,
@@ -330,13 +375,18 @@ async function managerAction(store, server, interaction, name, settings) {
       store.transaction(() => {
         store.run('DELETE FROM confirmation WHERE id=?', code);
         store.saveQuarantine(row, 'releasing');
-        store.log(guild, `Карантин #${row.id}: оператор ${actor} подтвердил снятие. Причина: ${data.reason}. Опасные роли: ${dangerous ? 'подтверждены по списку' : 'пропущены'}.`);
+        store.log(guild, { title: 'Снятие карантина подтверждено', tone: 'quarantine',
+          description: literal(data.reason),
+          fields: [field('Оператор', userRef(actor)), field('Участник', userRef(row.member)),
+            field('Опасные роли', dangerous ? 'Возврат подтверждён' : 'Пропущены')],
+          footer: `Карантин №${row.id}`,
+        });
       });
       return `Снятие карантина #${row.id} добавлено в очередь. Пропущено изменений: ${skipped.length}.`;
     }
     case 'incidents':
       return store.all('SELECT id,kind,actor,target,last FROM incident WHERE guild=? ORDER BY id DESC LIMIT 15 OFFSET ?',
-        guild, rowPage(options, 15)).map(row => `#${row.id} · ${row.kind} · ${label(row.actor, 'неизвестен')} → ${label(row.target)} · ${timestamp(row.last)}`)
+        guild, rowPage(options, 15)).map(row => `**№${row.id} · ${eventName[row.kind] ?? row.kind}**\n${userRef(row.actor)} → ${targetRef(row.kind, row.target, guild)} · ${timestamp(row.last)}`)
         .join('\n') || 'Инцидентов на странице нет.';
     case 'incident': {
       const id = options.getInteger('id', true);
@@ -346,14 +396,24 @@ async function managerAction(store, server, interaction, name, settings) {
       const quarantines = store.all(`SELECT q.id,q.phase,q.data FROM quarantine q,json_each(q.incidents) j
         WHERE q.guild=? AND j.value=?`, guild, id).map(decoded);
       return [
-        `Инцидент #${id} · ${incident.kind} · ${timestamp(incident.first)}`,
-        ...events.map(item => `${timestamp(item.at)} · ${label(item.actor, 'неизвестен')} → ${label(item.target)} · ${JSON.stringify(item.data)}`),
+        `**№${id} · ${eventName[incident.kind] ?? incident.kind}** · ${timestamp(incident.first)}`,
+        ...events.map(item => [
+          `${userRef(item.actor)} → ${targetRef(incident.kind, item.target, guild)}`,
+          reactionName[item.data.reaction],
+          Number.isFinite(item.data.count) ? `${item.data.count} / ${item.data.limit} за ${item.data.seconds} с` : '',
+          timestamp(item.at),
+        ].filter(Boolean).join(' · ')),
         ...quarantines.map(row => `Карантин #${row.id} · ${phaseNames[row.phase]} · ${(row.data.blocked ?? []).join(' ')}`),
       ].join('\n');
     }
     case 'logs':
-      return store.all('SELECT at,body,status,error FROM log WHERE guild=? ORDER BY id DESC LIMIT 10 OFFSET ?',
-        guild, rowPage(options, 10)).map(row => `${timestamp(row.at)} [${row.status}] ${row.body}${row.error ? '\nОшибка доставки: ' + row.error : ''}`)
+      return store.all('SELECT * FROM log WHERE guild=? ORDER BY id DESC LIMIT 10 OFFSET ?',
+        guild, rowPage(options, 10)).map(row => {
+          const card = logCard(row, server.guild);
+          return `**${card.title}** · ${timestamp(row.at)} · ${delivery[row.status] ?? row.status}\n`
+            + [card.description, ...(card.fields ?? []).map(item => `**${item.name}** ${item.value}`),
+              card.footer, row.error ? 'Ошибка доставки: ' + row.error : null].filter(Boolean).join(' · ');
+        })
         .join('\n\n') || 'Записей на странице нет.';
     default:
       throw new Error('Неизвестная команда антикраша.');
@@ -365,8 +425,9 @@ export async function handleCommand(store, server, interaction) {
   try {
     const settings = store.settings(interaction.guildId);
     if (!isManager(settings, server.guild.ownerId, interaction.user.id)) throw new Error(managerMessage);
-    await respond(interaction, await managerAction(store, server, interaction, interaction.options.getSubcommand(), settings));
+    const name = interaction.options.getSubcommand();
+    await respond(interaction, server.guild, commandTitles[name], await managerAction(store, server, interaction, name, settings));
   } catch (error) {
-    await respond(interaction, `Ошибка. ${error.message.slice(0, 450)}`);
+    await respond(interaction, server.guild, 'Действие не выполнено', error.message.slice(0, 450), 'error');
   }
 }

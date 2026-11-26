@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AuditLogEvent as A, PermissionFlagsBits as P } from 'discord.js';
 import { bit, danger, dangerous, isManager, permissionNames } from './policy.mjs';
+import { channelRef, field, literal, readableText, roleRef, userRef } from './presentation.mjs';
 
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const has = (value, mask) => (bit(value) & mask) === mask;
@@ -130,7 +131,11 @@ export async function applyQuarantine(store, adapter, row, settings) {
   const state = await adapter.state(row.member);
   const errors = [];
   if (!state.member) {
-    if (row.phase !== 'absent') store.log(row.guild, `Карантин #${row.id}: участник ${row.member} вне сервера, ждём повторного входа.`, true);
+    if (row.phase !== 'absent') store.log(row.guild, {
+      title: 'Участник покинул сервер', tone: 'quarantine',
+      description: 'Карантин будет проверен при повторном входе.',
+      fields: [field('Участник', userRef(row.member))], footer: `Карантин №${row.id}`,
+    }, true);
     store.saveQuarantine(row, 'absent');
     return;
   }
@@ -146,7 +151,10 @@ export async function applyQuarantine(store, adapter, row, settings) {
   if (state.member.owner || state.member.self) {
     row.data.blocked = ['Участник является владельцем или самим ботом. Владелец может изменить доступ вручную.'];
     store.saveQuarantine(row, 'partial');
-    store.log(row.guild, `Карантин #${row.id} частичный. ${row.data.blocked[0]}`, true);
+    store.log(row.guild, {
+      title: 'Карантин применён частично', tone: 'alert', description: row.data.blocked[0],
+      fields: [field('Участник', userRef(row.member))], footer: `Карантин №${row.id}`,
+    }, true);
     return;
   }
 
@@ -223,10 +231,14 @@ export async function applyQuarantine(store, adapter, row, settings) {
   const phase = row.data.blocked.length ? 'partial' : 'active';
   store.transaction(() => {
     store.saveQuarantine(row, phase);
-    store.log(row.guild,
-      `Карантин #${row.id} · инциденты ${row.incidents} · ${row.member} · ${phase === 'active' ? 'активен, права проверены' : 'частичный'}\n`
-      + `Причина: ${row.reason}\nВыполнено операций: ${steps.filter(step => step.state === 'applied').length}.\n`
-      + row.data.blocked.join('\n'), phase === 'partial');
+    store.log(row.guild, {
+      title: phase === 'active' ? 'Карантин применён' : 'Частичный карантин',
+      tone: phase === 'active' ? 'quarantine' : 'alert',
+      description: phase === 'active' ? 'Ограничения проверены.'
+        : readableText(row.data.blocked.map(problem => `• ${problem}`).join('\n'), adapter.guild),
+      fields: [field('Участник', userRef(row.member)), field('Причина', literal(row.reason), false)],
+      footer: `Карантин №${row.id} · Инциденты ${JSON.parse(row.incidents).map(id => `№${id}`).join(', ')}`,
+    }, phase === 'partial');
   });
 }
 
@@ -234,7 +246,7 @@ export async function previewRelease(adapter, row) {
   const state = await adapter.state(row.member);
   const entries = [];
   for (const [key, step] of Object.entries(row.data.steps ?? {})) {
-    const label = `${step.kind === 'overwrite' ? 'Права в канале' : 'Роль'} ${step.id}`;
+    const label = step.kind === 'overwrite' ? `Права в ${channelRef(step.id)}` : `Роль ${roleRef(step.id)}`;
     let skip;
     if (step.state !== 'applied' || step.release?.status === 'applied') continue;
     if (step.kind !== 'overwrite' && !state.member) skip = 'участник вне сервера';
@@ -303,9 +315,13 @@ export async function releaseQuarantine(store, adapter, row) {
   const phase = errors.length ? 'release-partial' : 'released';
   store.transaction(() => {
     store.saveQuarantine(row, phase);
-    store.log(row.guild,
-      `Карантин #${row.id} · участник ${row.member} · ${errors.length ? 'снят частично' : 'снят'} · оператор ${plan.operator}.\n`
-      + `Причина: ${plan.reason}. Пропущено при просмотре: ${plan.skipped.join(', ') || '0'}.\n${errors.join('\n')}`,
-    !!errors.length || !!plan.skipped.length);
+    store.log(row.guild, {
+      title: errors.length ? 'Карантин снят частично' : 'Карантин снят',
+      tone: errors.length ? 'alert' : 'success',
+      description: readableText([...errors, ...plan.skipped].map(line => `• ${line}`).join('\n'), adapter.guild),
+      fields: [field('Участник', userRef(row.member)), field('Оператор', userRef(plan.operator)),
+        field('Причина', literal(plan.reason), false)],
+      footer: `Карантин №${row.id}`,
+    }, !!errors.length || !!plan.skipped.length);
   });
 }

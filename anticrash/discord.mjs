@@ -1,3 +1,4 @@
+import { logCard, logMessage } from './presentation.mjs';
 import { AuditLogEvent as A, ChannelType as C, PermissionFlagsBits as P, Routes } from 'discord.js';
 import { bit, danger, discordTime, guildSettingsKeys, isId, snowflakeAt } from './policy.mjs';
 
@@ -310,14 +311,14 @@ export class DiscordServer {
     return errors;
   }
 
-  async send(settings, message, urgent) {
+  async send(settings, row) {
     const channel = await this.guild.channels.fetch(settings.log);
     if (!channel?.isSendable()) throw new Error('Канал логов недоступен.');
-    const mention = urgent && settings.mention;
-    await channel.send({
-      content: (mention ? `<@&${mention}>\n` : '') + message,
-      allowedMentions: { parse: [], roles: mention ? [mention] : [] },
-    });
+    const me = this.guild.members.me ?? await this.guild.members.fetchMe();
+    const embeds = channel.permissionsFor(me)?.has(P.EmbedLinks) ?? false;
+    const card = logCard(row, this.guild);
+    const mention = row.urgent ? settings.mention : null;
+    await channel.send(logMessage(card, mention, embeds));
   }
 }
 

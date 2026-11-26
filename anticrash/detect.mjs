@@ -1,3 +1,4 @@
+import { eventName, field, reactionName, roleRef, targetRef, userRef } from './presentation.mjs';
 import { AuditLogEvent as A } from 'discord.js';
 import { activeTrust, canAuthorizeGrant, classify, isId, trustFor } from './policy.mjs';
 
@@ -42,7 +43,11 @@ function applyTrustChanges(store, settings, guild, entry, identity) {
     const epoch = settings.trustEpoch[role] ?? 0;
     if (epoch > entry.at) continue;
     settings.trustEpoch[role] = entry.at + 1;
-    store.log(guild, `Доверие к участникам роли ${role} приостановлено после изменения роли. Проверь роль и подтверди держателей командой /anticrash trust-confirm.`, true);
+    store.log(guild, {
+      title: 'Доверие к роли приостановлено', tone: 'alert',
+      description: 'После изменения роли проверь её и подтверди держателей через `/anticrash trust-confirm`.',
+      fields: [field('Роль', roleRef(role))],
+    }, true);
     changed = true;
   }
   if (changed) store.saveSettings(guild, settings);
@@ -95,21 +100,28 @@ function threshold(store, guild, settings, signal, entry, identity, decision, sc
 
   let q;
   if (effective === 'quarantine' && confirmed) {
-    q = store.queueQuarantine(guild, entry.actor, id, `${signal.type}, ${count}/${limit} за ${rule.seconds} с`);
+    q = store.queueQuarantine(guild, entry.actor, id, `${eventName[signal.type] ?? signal.type} · ${count} / ${limit} за ${rule.seconds} с`);
   }
   if (first) {
-    const details = {
-      quarantine: `карантин #${q} в очереди`, 'would-quarantine': 'в наблюдении назначил бы карантин',
-      log: 'запись в журнале', alert: 'тревога',
-    };
-    store.log(guild, [
-      `Инцидент #${id} · ${signal.type} · ${new Date(entry.at).toISOString()}`,
-      `Исполнитель: ${entry.actor ?? 'не подтверждён'}. Цель: ${signal.target ?? 'не подтверждена'}.`,
-      `Действий: ${count}, порог: ${limit} за ${rule.seconds} с. Реакция: ${details[effective]}.`,
-      scope === 'global' ? 'Суммарный порог по серверу.' : '',
+    const notes = [
+      scope === 'global' ? 'Сработал общий порог по серверу.' : '',
       decision.stale ? 'Запись получена после окна автоматической реакции.' : '',
-      decision.problem ?? '',
-    ].filter(Boolean).join('\n'), effective === 'alert' || effective === 'quarantine');
+      decision.problem,
+    ].filter(Boolean);
+    const unknown = scope === 'unknown';
+    store.log(guild, {
+      title: eventName[signal.type] ?? signal.type,
+      description: notes.join('\n'),
+      tone: effective === 'would-quarantine' ? 'observe' : effective === 'log' ? 'info' : effective,
+      at: entry.at,
+      fields: [
+        field('Исполнитель', unknown && !entry.actor ? 'Не подтверждён' : userRef(entry.actor)),
+        field('Цель', targetRef(signal.type, signal.target, guild, entry)),
+        field('Реакция', q ? `Карантин №${q} в очереди` : reactionName[effective]),
+        ...(!unknown ? [field('Порог', `${count} / ${limit} за ${rule.seconds} с`)] : []),
+      ],
+      footer: `Инцидент №${id}`,
+    }, effective === 'alert' || effective === 'quarantine');
   }
   return id;
 }
