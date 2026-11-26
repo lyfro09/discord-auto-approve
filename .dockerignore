@@ -4,3 +4,4 @@
 !bot.mjs
 !anticrash/
 !anticrash/*.mjs
+!docker-entrypoint.sh

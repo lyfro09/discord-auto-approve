@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { AuditLogEvent as A, Client, Events, GatewayIntentBits as I, Routes } from 'discord.js';
 import { commandData, handleCommand } from './commands.mjs';
@@ -310,7 +310,15 @@ export class AntiCrash {
 }
 
 export async function startAntiCrash(token, signal) {
-  const store = new Store(process.env.ANTICRASH_DB_PATH || join(process.env.DATA_DIR || './data', 'anticrash.sqlite'));
+  if (signal?.aborted) return;
+  const path = process.env.ANTICRASH_DB_PATH || join(process.env.DATA_DIR || './data', 'anticrash.sqlite');
+  let store;
+  try {
+    store = new Store(path);
+  } catch (error) {
+    throw new Error(`SQLite ${path === ':memory:' ? path : resolve(path)}: ${describe(error)}`, { cause: error });
+  }
+  console.log(`Антикраш: SQLite открыта (${path === ':memory:' ? path : resolve(path)}).`);
   const client = new Client({ intents: [I.Guilds, I.GuildModeration, I.GuildMembers, I.GuildVoiceStates, I.GuildWebhooks] });
   const guard = new AntiCrash(client, store);
   if (signal?.aborted) return;
