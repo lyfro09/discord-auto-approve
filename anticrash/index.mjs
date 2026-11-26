@@ -14,10 +14,11 @@ import { field, readableText, userRef } from './presentation.mjs';
 const describe = error => String(error.message ?? error).slice(0, 230);
 
 export class AntiCrash {
-  constructor(client, store, { protection = true, guild, role } = {}) {
+  constructor(client, store, { protection = true, guild, role, publishLogs = false } = {}) {
     this.client = client;
     this.store = store;
     this.protection = protection;
+    this.publishLogs = publishLogs;
     this.joinRole = new JoinRole(store, guild, role);
     this.servers = new Map();
     this.auditQueues = new Map();
@@ -30,7 +31,7 @@ export class AntiCrash {
   }
 
   server(guild) {
-    if (!this.servers.has(guild.id)) this.servers.set(guild.id, new DiscordServer(guild, this.store));
+    if (!this.servers.has(guild.id)) this.servers.set(guild.id, new DiscordServer(guild, this.store, this.publishLogs));
     return this.servers.get(guild.id);
   }
 
@@ -321,8 +322,12 @@ export class AntiCrash {
   }
 
   async deliver(server, settings) {
-    if (!settings.log) return;
     const guild = server.guild.id;
+    if (!this.publishLogs) {
+      this.store.run("UPDATE log SET status='local',error=NULL WHERE guild=? AND status='queued'", guild);
+      return;
+    }
+    if (!settings.log) return;
     const pending = this.store.all(`SELECT * FROM log WHERE guild=? AND status='queued' AND due<=?
       ORDER BY urgent DESC,id LIMIT 8`, guild, Date.now());
     for (const row of pending) {
@@ -350,6 +355,7 @@ export async function startAntiCrash(token, signal, options) {
   console.log(`Антикраш: SQLite открыта (${path === ':memory:' ? path : resolve(path)}).`);
   const client = new Client({ intents: [I.Guilds, I.GuildModeration, I.GuildMembers, I.GuildVoiceStates, I.GuildWebhooks] });
   const guard = new AntiCrash(client, store, options);
+  if (guard.protection && !guard.publishLogs) console.log('Антикраш: уведомления в Discord выключены.');
   if (signal?.aborted) return;
   signal?.addEventListener('abort', () => guard.stop(), { once: true });
   guard.start();

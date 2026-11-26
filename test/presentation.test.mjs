@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DiscordServer } from '../anticrash/discord.mjs';
+import { AntiCrash } from '../anticrash/index.mjs';
 import { embedFor, field, logCard, logMessage, targetRef, userRef } from '../anticrash/presentation.mjs';
 import { Store } from '../anticrash/store.mjs';
 
@@ -77,4 +78,17 @@ test('миграция сохраняет старые записи и отпр�
   await server.send({ log, mention: alertRole }, fresh);
   assert.equal(sent[0].content, undefined);
   assert.equal(sent[0].embeds[0].title, 'Режим защиты изменён');
+});
+
+test('в тихом режиме журнал сохраняется, а ни старые, ни новые уведомления не уходят в Discord', async t => {
+  const store = new Store(':memory:');
+  t.after(() => store.close());
+  const server = { guild: { id: guildId }, send: async () => assert.fail('Discord notification sent') };
+  const guard = new AntiCrash({}, store);
+  store.log(guildId, 'Старая запись', true);
+  await guard.deliver(server, { log, mention: alertRole });
+  store.log(guildId, { title: 'Новая запись', tone: 'alert' }, true);
+  await guard.deliver(server, { log, mention: alertRole });
+  assert.deepEqual(store.all('SELECT status FROM log ORDER BY id').map(row => row.status), ['local', 'local']);
+  assert.equal(store.get('SELECT COUNT(*) n FROM log').n, 2);
 });

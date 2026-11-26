@@ -87,7 +87,7 @@ const phaseNames = {
 };
 const rowPage = (options, size) => ((options.getInteger('page') ?? 1) - 1) * size;
 const trustMode = { allow: 'Разрешённые действия', limit: 'Повышенный порог', immune: 'Полный иммунитет' };
-const delivery = { sent: 'Доставлено', queued: 'В очереди' };
+const delivery = { sent: 'Доставлено', queued: 'В очереди', local: 'Только в журнале' };
 const trustRef = (kind, id) => kind === 'role' ? roleRef(id) : userRef(id);
 const commandTitles = {
   status: 'Состояние защиты', setup: 'Настройка защиты', mode: 'Режим защиты', rules: 'Правила защиты',
@@ -155,13 +155,14 @@ async function managerAction(store, server, interaction, name, settings) {
       const current = await server.check(settings);
       const pending = store.get(`SELECT COUNT(*) AS count FROM quarantine
         WHERE guild=? AND phase!='released'`, guild).count;
-      const logChannel = server.guild.channels?.cache.get(settings.log);
+      const logChannel = server.publishLogs ? server.guild.channels?.cache.get(settings.log) : null;
       const embeds = logChannel && server.guild.members.me && logChannel.permissionsFor(server.guild.members.me)?.has('EmbedLinks');
       return {
         title: 'Состояние защиты', tone: current.length ? 'alert' : 'success',
         description: [...current, ...(logChannel && !embeds ? ['Для эмбедов в канале журнала нужно право **Встраивать ссылки**.'] : [])].join('\n')
           || 'Проверки активной защиты пройдены.',
-        fields: [...settingFields(settings), field('Открытые карантины', String(pending)),
+        fields: [...settingFields(settings), field('Автоуведомления', server.publishLogs ? 'Включены' : 'Выключены'),
+          field('Открытые карантины', String(pending)),
           field('Администраторы', settings.managers.map(userRef).join(', ') || 'Только владелец', false)],
       };
     }

@@ -116,7 +116,9 @@ async function main() {
   if (configuredRole && !role) console.error('Автовыдача при входе: укажи числовой DISCORD_JOIN_ROLE_ID.');
   if (protection || role) {
     void import('./anticrash/index.mjs')
-      .then(module => module.startAntiCrash(token, stopAntiCrash.signal, { protection, guild, role }))
+      .then(module => module.startAntiCrash(token, stopAntiCrash.signal, {
+        protection, guild, role, publishLogs: process.env.DISCORD_LOG_MESSAGES === 'true',
+      }))
       .catch(error => console.error(`Антикраш не запустился: ${error.message}`));
   }
 

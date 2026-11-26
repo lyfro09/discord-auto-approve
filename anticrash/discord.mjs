@@ -118,9 +118,10 @@ const channelReady = (channel, me) => !!channel && logTypes.has(channel.type)
   && channel.permissionsFor(me).has([P.ViewChannel, P.SendMessages]);
 
 export class DiscordServer {
-  constructor(guild, store) {
+  constructor(guild, store, publishLogs = true) {
     this.guild = guild;
     this.store = store;
+    this.publishLogs = publishLogs;
     this.rest = guild.client.rest;
     this.bot = guild.client.user.id;
     this.roleHistory = new Map();
@@ -288,13 +289,13 @@ export class DiscordServer {
     else if (!this.roleState(role, me).editable || (role.permissions.bitfield & danger)) {
       errors.push('Роль карантина должна находиться ниже роли бота и иметь только безопасные права. Управляемые роли запрещены.');
     }
-    if (!channelReady(channels.get(settings.log), me)) errors.push('Выбери канал логов с View Channel и Send Messages у бота.');
+    if (this.publishLogs && !channelReady(channels.get(settings.log), me)) errors.push('Выбери канал логов с View Channel и Send Messages у бота.');
     if (settings.support && (!channelReady(channels.get(settings.support), me)
       || !channels.get(settings.support).permissionsFor(me).has(P.ReadMessageHistory))) {
       errors.push('Канал связи должен быть текстовым и доступным боту для чтения и отправки сообщений.');
     }
     if (settings.support && settings.support === settings.log) errors.push('Каналы логов и связи должны быть разными.');
-    if (settings.mention) {
+    if (this.publishLogs && settings.mention) {
       const mention = roles.get(settings.mention);
       if (!mention || mention.id === guild.id || mention.id === settings.quarantine
         || (!mention.mentionable && !channels.get(settings.log)?.permissionsFor(me).has(P.MentionEveryone))) {
