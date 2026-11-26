@@ -34,7 +34,7 @@ export const field = (name, value, inline = true) => ({ name, value, inline });
 export function targetRef(type, target, guild, entry) {
   if (!isId(target)) return 'Не определена';
   if (target === guild) return type === 'everyone-permissions' ? '`@everyone`' : 'Этот сервер';
-  const nameChange = entry?.changes.find(item => item.key === 'name');
+  const nameChange = entry?.changes?.find(item => item.key === 'name');
   const name = nameChange?.new ?? nameChange?.old;
   if (type.startsWith('channel-') || type.startsWith('category-') || type === 'everyone-permissions') {
     if (type.endsWith('-delete')) {

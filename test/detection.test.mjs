@@ -99,6 +99,25 @@ test('запаздывающая подтверждённая запись по�
   assert.equal(store.get('SELECT COUNT(*) n FROM observations').n, 3);
 });
 
+test('отдельное событие Gateway без записи Audit Log оформляется в карточку и закрывается один раз', t => {
+  const { store } = setup('active');
+  t.after(() => store.close());
+  const target = '1575296477960474684';
+  observe(store, guild, 'unmatched-channel', now - 25_000,
+    { type: 'channel-delete', target, actions: [A.ChannelDelete] });
+
+  closeObservations(store, guild, now);
+  closeObservations(store, guild, now);
+
+  assert.equal(store.get('SELECT done FROM observations').done, 1);
+  assert.equal(store.get('SELECT COUNT(*) n FROM quarantine').n, 0);
+  assert.equal(store.get('SELECT COUNT(*) n FROM incident_event').n, 1);
+  const card = JSON.parse(store.get('SELECT presentation FROM log').presentation);
+  assert.equal(card.title, 'Удаление каналов');
+  assert.equal(card.fields.find(item => item.name === 'Цель').value, 'Удалённый канал');
+  assert.equal(card.description, 'Подтверждение в Audit Log отсутствует.');
+});
+
 test('индивидуальное правило важнее роли, два ролевых лимита дают меньший порог', () => {
   const config = defaultSettings();
   const entry = { created: now - 1000, expires: null, actions: ['ban'] };
