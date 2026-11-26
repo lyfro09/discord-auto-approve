@@ -1,2 +1,6 @@
 **
+!package.json
+!package-lock.json
 !bot.mjs
+!anticrash/
+!anticrash/*.mjs

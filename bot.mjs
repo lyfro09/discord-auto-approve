@@ -2,6 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const apiBase = 'https://discord.com/api/v10';
 const pageSize = 100;
+const stopAntiCrash = new AbortController();
 const isId = value => typeof value === 'string' && /^[1-9][0-9]{0,19}$/.test(value);
 
 class DiscordError extends Error {
@@ -109,6 +110,12 @@ async function main() {
     return;
   }
 
+  if (process.env.ANTICRASH_ENABLED !== 'false') {
+    void import('./anticrash/index.mjs')
+      .then(module => module.startAntiCrash(token, stopAntiCrash.signal))
+      .catch(error => console.error(`Антикраш не запустился: ${error.message}`));
+  }
+
   console.log(`Бот запущен для сервера ${guild}. Интервал проверки: ${interval} мс.`);
   let retryDelay = interval;
   while (true) {
@@ -125,6 +132,7 @@ async function main() {
 }
 
 main().catch(error => {
+  stopAntiCrash.abort();
   console.error(error.message);
   process.exitCode = 1;
 });
