@@ -114,10 +114,13 @@ async function main() {
   const configuredRole = process.env.DISCORD_JOIN_ROLE_ID?.trim();
   const role = isId(configuredRole) ? configuredRole : undefined;
   if (configuredRole && !role) console.error('Автовыдача при входе: укажи числовой DISCORD_JOIN_ROLE_ID.');
-  if (protection || role) {
+  const configuredTagRole = process.env.DISCORD_TAG_ROLE_ID?.trim();
+  const tagRole = isId(configuredTagRole) ? configuredTagRole : undefined;
+  if (configuredTagRole && !tagRole) console.error('Автовыдача за тег: укажи числовой DISCORD_TAG_ROLE_ID.');
+  if (protection || role || tagRole) {
     void import('./anticrash/index.mjs')
       .then(module => module.startAntiCrash(token, stopAntiCrash.signal, {
-        protection, guild, role, publishLogs: process.env.DISCORD_LOG_MESSAGES === 'true',
+        protection, guild, role, tagRole, publishLogs: process.env.DISCORD_LOG_MESSAGES === 'true',
       }))
       .catch(error => console.error(`Антикраш не запустился: ${error.message}`));
   }

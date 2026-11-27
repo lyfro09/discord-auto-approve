@@ -27,7 +27,7 @@ function start(check) {
   if (check) args.push('--check');
   return spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 8000,
     env: { ...process.env, DISCORD_BOT_TOKEN: 'token-for-tests', DISCORD_GUILD_ID: '100',
-      POLL_INTERVAL_MS: '1000', ANTICRASH_ENABLED: 'false', DISCORD_JOIN_ROLE_ID: '' } });
+      POLL_INTERVAL_MS: '1000', ANTICRASH_ENABLED: 'false', DISCORD_JOIN_ROLE_ID: '', DISCORD_TAG_ROLE_ID: '' } });
 }
 test('автопринятие: действующая очередь, 429, одобрение и остановка на 401', () => {
   const result = start(false);

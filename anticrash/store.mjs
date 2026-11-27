@@ -44,6 +44,12 @@ const migrations = [`
     attempts INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(guild,member)
   );
   CREATE INDEX join_role_due ON join_role_queue(guild,done,due);
+`, `
+  CREATE TABLE tag_role_queue (
+    guild TEXT NOT NULL, member TEXT NOT NULL, joined INTEGER NOT NULL, due INTEGER NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(guild,member)
+  );
+  CREATE INDEX tag_role_due ON tag_role_queue(guild,done,due);
 `];
 
 const encode = JSON.stringify;
