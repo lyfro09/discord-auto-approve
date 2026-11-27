@@ -57,7 +57,7 @@ test('миграция сохраняет старые записи и отпр�
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const path = join(dir, 'state.sqlite');
   let store = new Store(path);
-  store.db.exec('DROP TABLE tag_role_queue; DROP TABLE join_role_queue; ALTER TABLE log DROP COLUMN presentation; PRAGMA user_version=1');
+  store.db.exec('DROP TABLE tag_role_scan; DROP TABLE tag_role_queue; DROP TABLE join_role_queue; ALTER TABLE log DROP COLUMN presentation; PRAGMA user_version=1');
   const original = `Настройки · оператор ${actor} · режим active`;
   store.run('INSERT INTO log (guild,at,body,urgent) VALUES (?,?,?,?)', guildId, at, original, 0);
   store.close();

@@ -11,7 +11,7 @@ function fixture(t) {
   const store = new Store(':memory:');
   t.after(() => store.close());
   const role = { id: ids.role, name: 'Участник', editable: true, permissions: { bitfield: 0n } };
-  const guild = { id: ids.guild, members: { fetchMe: async () => ({}) }, roles: { fetch: async () => role } };
+  const guild = { id: ids.guild, members: { fetchMe: async () => ({}), list: async () => new Map() }, roles: { fetch: async () => role } };
   const member = { guild, id: ids.member, joinedTimestamp: Date.now(), pending: false, roles: { cache: new Map() } };
   const grants = [];
   const server = { guild, member: async () => member, role: async (...args) => grants.push(args) };
@@ -135,4 +135,36 @@ test('перед выдачей проверяется текущий тег, в
   award.screeningFinished(member);
   await award.work(server, config);
   assert.equal(grants.length, 1);
+});
+
+
+test('одноразовый обход охватывает текущих участников, продолжает с сохранённой страницы и не запускается снова', async t => {
+  const { store, member, grants, server } = fixture(t);
+  const config = store.settings(ids.guild);
+  member.user = { bot: false, primaryGuild: memberTag };
+  const onNextPage = { ...member, id: '3000' };
+  const alreadyAssigned = { ...member, id: '3001', roles: { cache: new Map([[ids.role, {}]]) } };
+  const otherTag = { ...member, id: '3002', user: { primaryGuild: { ...memberTag, identityGuildId: '200' } } };
+  const page = new Map([[member.id, member]]);
+  for (let i = 1000; i < 1999; i++) {
+    page.set(String(i), { ...otherTag, id: String(i) });
+  }
+  const paged = [];
+  server.guild.members.list = async ({ after }) => {
+    paged.push(after);
+    if (after === '0') return page;
+    assert.equal(after, '1998');
+    return new Map([onNextPage, alreadyAssigned, otherTag].map(item => [item.id, item]));
+  };
+  const found = new Map([member, onNextPage, alreadyAssigned, otherTag].map(item => [item.id, item]));
+  server.member = async id => found.get(id);
+  await new TagRole(store, ids.guild, ids.role).work(server, config);
+  assert.deepEqual(grants.map(item => item[0]), [member.id]);
+  assert.equal(store.get('SELECT done FROM tag_role_scan').done, 0);
+  await new TagRole(store, ids.guild, ids.role).work(server, config);
+  assert.deepEqual(grants.map(item => item[0]), [member.id, onNextPage.id]);
+  assert.equal(store.get('SELECT done FROM tag_role_scan').done, 1);
+  await new TagRole(store, ids.guild, ids.role).work(server, config);
+  assert.deepEqual(paged, ['0', '1998']);
+  assert.equal(grants.length, 2);
 });

@@ -14,10 +14,12 @@ class AutomaticRole {
     this.status = null;
   }
 
-  queue(member, joined) {
+  queue(member, joined, revisit = false) {
     this.store.run(`INSERT INTO ${this.table} (guild,member,joined,due) VALUES (?,?,?,?)
       ON CONFLICT(guild,member) DO UPDATE SET joined=excluded.joined,due=excluded.due,attempts=0,done=0
-      WHERE excluded.joined>${this.table}.joined`, this.guild, member, joined, Date.now());
+      WHERE excluded.joined>${this.table}.joined
+        OR (?=1 AND excluded.joined=${this.table}.joined AND ${this.table}.done=1)`,
+    this.guild, member, joined, Date.now(), Number(revisit));
   }
 
   screeningFinished(member) {
@@ -38,6 +40,8 @@ class AutomaticRole {
   }
 
   matches() { return true; }
+
+  granted() {}
 
   async availableRole(server, settings) {
     if (this.role === settings.quarantine) throw new Error('Выбрана роль карантина.');
@@ -92,6 +96,7 @@ class AutomaticRole {
           row.guild, reason, A.MemberRoleUpdate, row.member, '$add', role.id, Date.now());
         await server.role(row.member, role.id, true, reason);
         this.finish(row);
+        this.granted();
       } catch (error) {
         if (row.attempts === 0) console.error(`${this.label}: ${error.message}`);
         this.defer(row, Math.min(300_000, 5_000 * 2 ** Math.min(6, row.attempts)), true);
@@ -121,6 +126,10 @@ export class JoinRole extends AutomaticRole {
 export class TagRole extends AutomaticRole {
   constructor(store, guild, role) {
     super(store, guild, role, { table: 'tag_role_queue', label: 'Автовыдача за тег', marker: 'auto-tag-role' });
+    this.scanDone = false;
+    this.retryScanAt = 0;
+    this.reportScan = false;
+    this.grantsSinceStart = 0;
   }
 
   observe({ t, d }) {
@@ -138,6 +147,63 @@ export class TagRole extends AutomaticRole {
       return;
     }
     if (!d.roles?.includes(this.role)) this.queue(user.id, Date.parse(d.joined_at) || 0);
+  }
+
+  async work(server, settings) {
+    if (!this.enabled || server.guild.id !== this.guild) return;
+    if (!this.scanDone && this.retryScanAt <= Date.now()) {
+      try {
+        await this.scanCurrentMembers(server.guild);
+      } catch (error) {
+        console.error(`Автовыдача за тег: обход участников отложен. ${error.message}`);
+        this.retryScanAt = Date.now() + 30_000;
+      }
+    }
+    await super.work(server, settings);
+    if (this.reportScan && this.scanDone) {
+      const waiting = this.store.get('SELECT COUNT(*) AS count FROM tag_role_queue WHERE guild=? AND done=0', this.guild).count;
+      if (waiting !== this.lastWaiting) {
+        console.log(`Автовыдача за тег: выдано с запуска ${this.grantsSinceStart}, ожидают ${waiting}.`);
+        this.lastWaiting = waiting;
+      }
+      if (waiting === 0) this.reportScan = false;
+    }
+  }
+
+  granted() {
+    this.grantsSinceStart++;
+  }
+
+  async scanCurrentMembers(guild) {
+    const saved = this.store.get('SELECT cursor,done FROM tag_role_scan WHERE guild=? AND role=?', this.guild, this.role);
+    if (saved?.done) {
+      this.scanDone = true;
+      return;
+    }
+
+    // Process one page per tick so the one-time scan does not block live moderation jobs.
+    const limit = 1000;
+    const after = saved?.cursor ?? '0';
+    const page = await guild.members.list({ limit, after, cache: false });
+    let cursor = after;
+    const matches = [];
+    for (const member of page.values()) {
+      if (BigInt(member.id) <= BigInt(after)) continue;
+      if (BigInt(member.id) > BigInt(cursor)) cursor = member.id;
+      if (this.matches(member) && !member.roles.cache.has(this.role)) matches.push(member);
+    }
+    const done = page.size < limit;
+    if (!done && cursor === after) throw new Error('Discord вернул страницу без новых участников.');
+
+    this.store.transaction(() => {
+      for (const member of matches) this.queue(member.id, member.joinedTimestamp ?? 0, true);
+      this.store.run(`INSERT INTO tag_role_scan (guild,role,cursor,done) VALUES (?,?,?,?)
+        ON CONFLICT(guild,role) DO UPDATE SET cursor=excluded.cursor,done=excluded.done`,
+      this.guild, this.role, cursor, Number(done));
+    });
+    this.scanDone = done;
+    this.reportScan = true;
+    if (done) console.log('Автовыдача за тег: одноразовый обход участников завершён.');
   }
 
   matches(member) {

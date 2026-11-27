@@ -50,6 +50,11 @@ const migrations = [`
     attempts INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(guild,member)
   );
   CREATE INDEX tag_role_due ON tag_role_queue(guild,done,due);
+`, `
+  CREATE TABLE tag_role_scan (
+    guild TEXT NOT NULL, role TEXT NOT NULL, cursor TEXT NOT NULL, done INTEGER NOT NULL,
+    PRIMARY KEY(guild,role)
+  );
 `];
 
 const encode = JSON.stringify;
